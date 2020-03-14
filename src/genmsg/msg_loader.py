@@ -50,8 +50,8 @@ except ImportError:
 
 from . base import InvalidMsgSpec, log, SEP, COMMENTCHAR, CONSTCHAR, IODELIM, EXT_MSG, EXT_SRV
 from . msgs import MsgSpec, TIME, TIME_MSG, DURATION, DURATION_MSG, HEADER, HEADER_FULL_NAME, \
-     is_builtin, is_valid_msg_field_name, is_valid_msg_type, bare_msg_type, is_valid_constant_type, \
-     Field, Constant, resolve_type
+     is_builtin, is_enum_type, is_valid_msg_field_name, is_valid_msg_type, bare_msg_type, is_valid_constant_type, \
+     Field, Constant, EnumDef, EnumVal, resolve_type
 from . names import normalize_package_context, package_resource_name
 from . srvs import SrvSpec
 
@@ -182,7 +182,8 @@ def convert_constant_value(field_type, val):
             raise InvalidMsgSpec("cannot coerce [%s] to %s (out of bounds)"%(val, field_type))
         return val
     elif field_type == 'bool':
-        return True if ast.literal_eval(val) else False
+        # TODO: need to nail down constant spec for bool
+        return True if eval(val) else False
     raise InvalidMsgSpec("invalid constant type: [%s]"%field_type)
 
 def _load_constant_line(orig_line):
@@ -213,6 +214,56 @@ def _load_constant_line(orig_line):
         raise InvalidMsgSpec("Invalid constant value: %s"%e)
     return Constant(field_type, name, val_converted, val.strip())
 
+def _check_load_enum_def_line(orig_line):
+    """
+    :returns: (enum_type, name) tuple, ``(str, str)``
+    :raises: :exc:`InvalidMsgSpec`
+    """
+    clean_line = _strip_comments(orig_line)
+    line_splits = [s for s in [x.strip() for x in clean_line.split(" ")] if s] #split type/name, filter out empties
+    if len(line_splits) == 3 and line_splits[0] == 'enum' and line_splits[1] == 'start':
+    #TODO: add is_valid_msg_type()...
+        return EnumDef('uint32', line_splits[2])
+    elif len(line_splits) == 4 and line_splits[0] == 'enum' and line_splits[1] == 'start':
+    #TODO: add is_valid_msg_type()...
+        return EnumDef(line_splits[3], line_splits[2])
+    else:
+        return None
+
+def _check_enum_def_end_line(orig_line):
+    """
+    :returns: (enum_type, name) tuple, ``(str, str)``
+    :raises: :exc:`InvalidMsgSpec`
+    """
+    clean_line = _strip_comments(orig_line)
+    line_splits = [s for s in [x.strip() for x in clean_line.split(" ")] if s] #split type/name, filter out empties
+    if len(line_splits) ==  2 and line_splits[0] == 'enum' and line_splits[1] == 'end':
+        return True
+    else:
+        return False
+    
+def _load_enum_line(orig_line, field_type):
+    """
+    :raises: :exc:`InvalidMsgSpec`
+    """
+    clean_line = _strip_comments(orig_line)
+    line_splits = [s for s in [x.strip() for x in clean_line.split(" ")] if s] #split type/name, filter out empties
+#    field_type = line_splits[0]
+#    if not is_valid_constant_type(field_type):
+#        raise InvalidMsgSpec("%s is not a legal constant type"%field_type)
+
+    line_splits = [x.strip() for x in ' '.join(line_splits[0:]).split(CONSTCHAR)] #resplit on '='
+    if len(line_splits) != 2:
+        raise InvalidMsgSpec("Invalid enum declaration: %s"%orig_line)
+    name = line_splits[0]
+    val = line_splits[1]
+
+    try:
+        val_converted = convert_constant_value(field_type, val)
+    except Exception as e:
+        raise InvalidMsgSpec("Invalid enum value: %s"%e)
+    return EnumVal(name, val_converted, val.strip())
+
 def _load_field_line(orig_line, package_context):
     """
     :returns: (field_type, name) tuple, ``(str, str)``
@@ -221,16 +272,31 @@ def _load_field_line(orig_line, package_context):
     #log("_load_field_line", orig_line, package_context)
     clean_line = _strip_comments(orig_line)
     line_splits = [s for s in [x.strip() for x in clean_line.split(" ")] if s] #split type/name, filter out empties
-    if len(line_splits) != 2:
+    if len(line_splits) == 3 and line_splits[0] == 'enum':
+        field_type = line_splits[1]
+        name = line_splits[2]
+        is_enum = True
+    elif len(line_splits) == 2: 
+        field_type = line_splits[0]
+        name = line_splits[1]
+        is_enum = False
+    else:        
         raise InvalidMsgSpec("Invalid declaration: %s"%(orig_line))
-    field_type, name = line_splits
+
     if not is_valid_msg_field_name(name):
         raise InvalidMsgSpec("%s is not a legal message field name"%name)
+#    if is_enum:
+#        #return field_type, name
+#        #raise InvalidMsgSpec("%s is not a legal message enum field type"%field_type)
+#        print('')
+#    el
     if not is_valid_msg_type(field_type):
         raise InvalidMsgSpec("%s is not a legal message field type"%field_type)
     if package_context and not SEP in field_type:
         if field_type == HEADER:
             field_type = HEADER_FULL_NAME
+        elif is_enum:
+            field_type = "enum/%s"%(field_type)
         elif not is_builtin(bare_msg_type(field_type)):
             field_type = "%s/%s"%(package_context, field_type)
     elif field_type == HEADER:
@@ -256,17 +322,32 @@ def load_msg_from_string(msg_context, text, full_name):
     types = []
     names = []
     constants = []
+    enums = []
+    current_enum = None #null if not inside enum declaration
+    
     for orig_line in text.split('\n'):
         clean_line = _strip_comments(orig_line)
         if not clean_line:
             continue #ignore empty lines
-        if CONSTCHAR in clean_line:
-            constants.append(_load_constant_line(orig_line))
+        if current_enum:
+            if _check_enum_def_end_line(clean_line):
+                enums.append(current_enum)
+                current_enum = None
+            else:
+                current_enum.add_value(_load_enum_line(orig_line, current_enum.type))
         else:
-            field_type, name = _load_field_line(orig_line, package_name)
-            types.append(field_type)
-            names.append(name)
-    spec = MsgSpec(types, names, constants, text, full_name, package_name)
+            current_enum = _check_load_enum_def_line(clean_line)
+            if current_enum:
+                continue
+            elif CONSTCHAR in clean_line:
+                constants.append(_load_constant_line(orig_line))
+            else:
+                field_type, name = _load_field_line(orig_line, package_name)
+                types.append(field_type)
+                names.append(name)
+
+    #TODO: add check that current_enum.def_ended
+    spec = MsgSpec(types, names, constants, text, full_name, enums, package_name)
     msg_context.register(full_name, spec)
     return spec
 
@@ -308,6 +389,10 @@ def load_msg_depends(msg_context, spec, search_path):
         bare_type = bare_msg_type(unresolved_type)
         resolved_type = resolve_type(bare_type, package_context)
         if is_builtin(resolved_type):
+            continue
+
+        if is_enum_type(resolved_type):
+            #TODO: check that the enum has been declared on this or other dependent file
             continue
 
         # Retrieve the MsgSpec instance of the field

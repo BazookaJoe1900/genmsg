@@ -49,7 +49,7 @@ except ImportError:
 
 from . import msgs
 
-from .msgs import InvalidMsgSpec, MsgSpec, bare_msg_type, is_builtin
+from .msgs import InvalidMsgSpec, MsgSpec, bare_msg_type, is_builtin, is_enum_type
 from .msg_loader import load_depends
 from .srvs import SrvSpec
 from . import names
@@ -76,6 +76,9 @@ def compute_md5_text(msg_context, spec):
         # md5 spec strips package names
         if is_builtin(msg_type):
             buff.write("%s %s\n"%(type_, name))
+        elif is_enum_type(msg_type):
+            buff.write("%s %s\n"%(type_, name))
+            #TODO: what excally needed here?            
         else:
             # recursively generate md5 for subtype.  have to build up
             # dependency representation for subtype in order to

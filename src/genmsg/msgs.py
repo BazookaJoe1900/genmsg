@@ -125,7 +125,6 @@ def is_valid_msg_type(x):
     #parse array indicies
     x = x[len(base):]
     state = 0
-    i = 0
     for c in x:
         if state == 0:
             if c != '[':
@@ -205,6 +204,7 @@ class Field(object):
     - ``is_array``
     - ``array_len``
     - ``is_builtin``
+    - ``is_enum_type``    
     - ``is_header``
     """
     
@@ -214,6 +214,7 @@ class Field(object):
         (self.base_type, self.is_array, self.array_len) = parse_type(type)
         self.is_header = is_header_type(self.type)
         self.is_builtin = is_builtin(self.base_type)
+        self.is_enum_type = is_enum_type(self.base_type)
 
     def __eq__(self, other):
         if not isinstance(other, Field):
@@ -225,6 +226,78 @@ class Field(object):
     def __repr__(self):
         return "[%s, %s, %s, %s, %s]"%(self.name, self.type, self.base_type, self.is_array, self.array_len)
 
+class EnumDef(object):
+    """
+    Container class for holding a Enum declaration
+
+    Attributes:
+
+    - ``type``
+    - ``name``
+    - ``vals_array``
+    """
+    __slots__ = ['type', 'name', 'vals_array']
+    
+    def __init__(self, type_, name):
+        """
+        :param type_: constant type, ``str``
+        :param name: constant name, ``str``
+        """
+        if type is None or name is None:
+            raise ValueError('Enum must have non-None parameters')
+        self.type = type_
+        self.name = name.strip() #names are always stripped of whitespace
+        self.vals_array = []
+
+    def __eq__(self, other):
+        if not isinstance(other, Constant):
+            return False
+        return self.type == other.type and self.name == other.name #TODO: Add more checks
+
+    def __repr__(self):
+        return "%s:%s"%(self.name, self.type)
+
+    def __str__(self):
+        return "%s:%s"%(self.name, self.type)
+    
+    def add_value(self, enum_val):
+        self.vals_array.append(enum_val)
+
+class EnumVal(object):
+    """
+    Container class for holding a Enum Value declaration
+
+    Attributes:
+
+    - ``name``
+    - ``val``    
+    - ``val_text`` 
+    """
+    __slots__ = ['name', 'val', 'val_text']
+    
+    def __init__(self, name, val, val_text):
+        """
+        :param name: constant name, ``str``
+        :param val: constant value, ``str``
+        :param val_text: Original text definition of *val*, ``str``
+        """
+        if name is None or val is None or val_text is None:
+            raise ValueError('Constant must have non-None parameters')
+        self.name = name.strip() #names are always stripped of whitespace
+        self.val = val
+        self.val_text = val_text
+
+    def __eq__(self, other):
+        if not isinstance(other, Constant):
+            return False
+        return self.name == other.name and self.val == other.val
+
+    def __repr__(self):
+        return "%s=%s"%(self.name, self.val)
+
+    def __str__(self):
+        return "%s=%s"%(self.name, self.val)
+        
 class MsgSpec(object):
     """
     Container class for storing loaded msg description files. Field
@@ -232,12 +305,16 @@ class MsgSpec(object):
     correspondence. MsgSpec can also return an md5 of the source text.
     """
 
-    def __init__(self, types, names, constants, text, full_name, package = '', short_name = ''):
+    def __init__(self, types, names, constants, text, full_name, enums, package = '', short_name = ''):
         """
         :param types: list of field types, in order of declaration, ``[str]``
         :param names: list of field names, in order of declaration, ``[str]``
         :param constants: List of :class:`Constant` declarations, ``[Constant]``
         :param text: text of declaration, ``str``
+        :param full_name: TBD
+        :param enums: list of enums, in order of declaration, ``[EnumDef]``
+        :param package: (optional, default empty) TBD
+        :param short_name: (optional, default empty) TBD
         :raises: :exc:`InvalidMsgSpec` If spec is invalid (e.g. fields with the same name)
         """
         alt_package, alt_short_name = package_resource_name(full_name)
@@ -251,6 +328,7 @@ class MsgSpec(object):
             raise InvalidMsgSpec("Duplicate field names in message: %s"%names)
         self.names = names
         self.constants = constants
+        self.enums = enums
         assert len(self.types) == len(self.names), "len(%s) != len(%s)"%(self.types, self.names)
         #Header.msg support
         if (len(self.types)):
@@ -288,9 +366,14 @@ class MsgSpec(object):
     def __eq__(self, other):
         if not other or not isinstance(other, MsgSpec):
             return False 
-        return self.types == other.types and self.names == other.names and \
-               self.constants == other.constants and self.text == other.text and \
-               self.full_name == other.full_name and self.short_name == other.short_name and \
+        return self.types == other.types and \
+               self.names == other.names and \
+               self.constants == other.constants and \
+               self.text == other.text and \
+               self.full_name == other.full_name and \
+               self.short_name == other.short_name and \
+               self.enums == other.enums and \
+               self.short_name == other.short_name and \
                self.package == other.package
 
     def __ne__(self, other):
@@ -299,8 +382,12 @@ class MsgSpec(object):
         return not self.__eq__(other)
 
     def __repr__(self):
-        if self.constants:
+        if self.constants and not self.enums:
             return "MsgSpec[%s, %s, %s]"%(repr(self.constants), repr(self.types), repr(self.names))
+        if not self.constants and self.enums:
+            return "MsgSpec[%s, %s, %s]"%(repr(self.constants), repr(self.types), repr(self.enums))
+        if self.constants and self.enums:
+            return "MsgSpec[%s, %s, %s, %s]"%(repr(self.constants), repr(self.types), repr(self.names), repr(self.enums))
         else:
             return "MsgSpec[%s, %s]"%(repr(self.types), repr(self.names))        
 
@@ -347,3 +434,6 @@ def is_builtin(msg_type_name):
     :returns: True if msg_type_name is a builtin/primitive type, ``bool``
     """
     return msg_type_name in BUILTIN_TYPES
+
+def is_enum_type(msg_type_name):
+    return msg_type_name.startswith('enum/')
